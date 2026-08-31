@@ -64,6 +64,7 @@ results can differ.</p>
   async function testApi() {
     var hs = hsUrl();
     if (!hs) return;
+    log("Testing homeserver: " + hs, "info");
 
     // Test 1a: TLS reachability (no-cors resolves iff the TLS+HTTP exchange completed)
     try {
