@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homeserver access probe</title>
+<!-- THROWAWAY SPIKE — tests whether a static web app (this page) can talk to a
+     Matrix homeserver from a browser: CORS, preflight, and SSO token login.
+     Contains no organization data; the homeserver URL is supplied by the
+     visitor via the #hs= fragment or the input field. -->
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 12px; background: #fff; color: #111; }
+  h1 { font-size: 1.1rem; }
+  input { font-size: 1rem; padding: 8px; width: 100%; box-sizing: border-box; margin: 4px 0; }
+  button { font-size: 1rem; padding: 10px 14px; margin: 4px 6px 4px 0; }
+  #log { white-space: pre-wrap; word-break: break-all; font-family: monospace;
+         font-size: 0.85rem; background: #f4f4f4; padding: 8px; border-radius: 6px; }
+  .ok { color: #0a7d33; } .bad { color: #c0392b; } .info { color: #555; }
+</style>
+</head>
+<body>
+<h1>Homeserver access probe</h1>
+<input id="hs" placeholder="https://synapse.example.org" autocapitalize="off" autocorrect="off">
+<div>
+  <button id="runApi">1. Test API access</button>
+  <button id="runSso">2. Test SSO login</button>
+</div>
+<p style="font-size:0.85rem;color:#555">Run test 1 first. Test 2 navigates away to the
+login page (a certificate prompt may appear — choose your client certificate) and
+returns here. Run this page both in a Safari tab AND after Add to Home Screen —
+results can differ.</p>
+<div id="log"></div>
+<script>
+(function () {
+  var logEl = document.getElementById("log");
+  function log(msg, cls) {
+    var line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = new Date().toISOString().slice(11, 19) + " " + msg;
+    logEl.appendChild(line);
+  }
+
+  var standalone = (navigator.standalone === true) ||
+    (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+  log("User agent: " + navigator.userAgent, "info");
+  log("Display mode: " + (standalone ? "HOME SCREEN (standalone)" : "browser tab"), "info");
+
+  var hsInput = document.getElementById("hs");
+  var fromHash = null;
+  try {
+    fromHash = new URLSearchParams(location.hash.slice(1)).get("hs");
+  } catch (e) {}
+  var stored = null;
+  try { stored = localStorage.getItem("probe_hs"); } catch (e) {}
+  hsInput.value = fromHash || stored || "";
+
+  function hsUrl() {
+    var v = hsInput.value.trim().replace(/\/+$/, "");
+    if (!/^https:\/\//.test(v)) { log("Enter a https:// homeserver URL first.", "bad"); return null; }
+    try { localStorage.setItem("probe_hs", v); } catch (e) {}
+    return v;
+  }
+
+  async function testApi() {
+    var hs = hsUrl();
+    if (!hs) return;
+
+    // Test 1a: TLS reachability (no-cors resolves iff the TLS+HTTP exchange completed)
+    try {
+      await fetch(hs + "/_matrix/client/versions", { mode: "no-cors" });
+      log("1a TLS reachability: OK — handshake completed from this context.", "ok");
+    } catch (e) {
+      log("1a TLS reachability FAILED: " + e, "bad");
+      log("RESULT: TLS-level failure — this context is not presenting a needed " +
+          "client certificate, or the host is unreachable. Companion-in-browser " +
+          "fails here.", "bad");
+      return;
+    }
+
+    // Test 1b: simple CORS GET
+    try {
+      var r = await fetch(hs + "/_matrix/client/versions");
+      var j = await r.json();
+      log("1b CORS GET /versions: HTTP " + r.status + ", " +
+          (j.versions ? j.versions.length + " spec versions" : "unexpected body"),
+          r.ok ? "ok" : "bad");
+    } catch (e) {
+      log("1b CORS GET FAILED: " + e + " — server reachable but CORS blocks reads. " +
+          "Needs server-side CORS config (admin).", "bad");
+      return;
+    }
+
+    // Test 1c: preflighted request (Authorization header forces OPTIONS preflight)
+    try {
+      var r2 = await fetch(hs + "/_matrix/client/versions",
+                           { headers: { "Authorization": "Bearer probe" } });
+      log("1c preflighted GET: HTTP " + r2.status + " — preflight passed.", "ok");
+    } catch (e) {
+      log("1c preflighted GET FAILED: " + e + " — OPTIONS preflight blocked; " +
+          "authed API calls would fail.", "bad");
+      return;
+    }
+
+    // Test 1d: login flows
+    try {
+      var r3 = await fetch(hs + "/_matrix/client/v3/login");
+      var j3 = await r3.json();
+      log("1d login flows: " + (j3.flows || []).map(function (f) { return f.type; }).join(", "), "ok");
+    } catch (e) {
+      log("1d login flows FAILED: " + e, "bad");
+    }
+
+    log("RESULT test 1: API access from this origin works. Now run test 2 (SSO).", "ok");
+  }
+
+  async function finishSso(token) {
+    var hs = hsUrl();
+    if (!hs) return;
+    log("Returned from SSO with a loginToken — exchanging it…");
+    try {
+      var r = await fetch(hs + "/_matrix/client/v3/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "m.login.token", token: token,
+                               initial_device_display_name: "access probe (throwaway)" })
+      });
+      var j = await r.json();
+      if (!r.ok || !j.access_token) {
+        log("2b token exchange FAILED: HTTP " + r.status + " " + JSON.stringify(j), "bad");
+        return;
+      }
+      log("2b token exchange OK — logged in as " + j.user_id, "ok");
+
+      var w = await fetch(hs + "/_matrix/client/v3/account/whoami",
+                          { headers: { "Authorization": "Bearer " + j.access_token } });
+      var wj = await w.json();
+      log("2c whoami: HTTP " + w.status + " " + JSON.stringify(wj), w.ok ? "ok" : "bad");
+
+      await fetch(hs + "/_matrix/client/v3/logout", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + j.access_token }
+      });
+      log("2d probe session logged out again.", "info");
+      log("RESULT: FULL PASS — a static web app in this context can complete SSO " +
+          "login and use the Matrix API. Companion app architecture is viable.", "ok");
+    } catch (e) {
+      log("2b token exchange FAILED: " + e, "bad");
+    }
+  }
+
+  document.getElementById("runApi").onclick = testApi;
+
+  document.getElementById("runSso").onclick = function () {
+    var hs = hsUrl();
+    if (!hs) return;
+    var back = location.origin + location.pathname;
+    log("Navigating to SSO login (expect a certificate prompt)…");
+    location.href = hs + "/_matrix/client/v3/login/sso/redirect?redirectUrl=" +
+                    encodeURIComponent(back);
+  };
+
+  var loginToken = new URLSearchParams(location.search).get("loginToken");
+  if (loginToken) {
+    // strip the token from the address bar before doing anything else
+    try { history.replaceState(null, "", location.pathname); } catch (e) {}
+    finishSso(loginToken);
+  } else if (hsInput.value) {
+    testApi();
+  }
+})();
+</script>
+</body>
+</html>
