@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Widget API spike</title>
+<!-- THROWAWAY SPIKE — tests whether this Matrix client grants a widget
+     MSC2762 event read/send capabilities. Not part of the real plugin. -->
+<script src="https://cdn.jsdelivr.net/npm/matrix-widget-api@1.13.0/dist/api.min.js"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 12px; background: #fff; color: #111; }
+  h1 { font-size: 1.1rem; }
+  button { font-size: 1rem; padding: 10px 14px; margin: 4px 6px 4px 0; }
+  #log { white-space: pre-wrap; word-break: break-all; font-family: monospace;
+         font-size: 0.85rem; background: #f4f4f4; padding: 8px; border-radius: 6px; }
+  .ok { color: #0a7d33; } .bad { color: #c0392b; }
+</style>
+</head>
+<body>
+<h1>Matrix widget API spike</h1>
+<div>
+  <button id="send" disabled>Send test message</button>
+  <button id="read" disabled>Read last 5 messages</button>
+</div>
+<div id="log"></div>
+<script>
+(function () {
+  var logEl = document.getElementById("log");
+  function log(msg, cls) {
+    var line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = new Date().toISOString().slice(11, 19) + " " + msg;
+    logEl.appendChild(line);
+  }
+
+  log("User agent: " + navigator.userAgent);
+  log("Query string: " + (location.search || "(empty)"));
+
+  if (typeof mxwidgets === "undefined") {
+    log("matrix-widget-api failed to load from CDN — no network or CSP block.", "bad");
+    return;
+  }
+
+  var params = new URLSearchParams(location.search);
+  var widgetId = params.get("widgetId");
+  log("widgetId param: " + (widgetId || "(missing — client may not identify us)"),
+      widgetId ? "ok" : "bad");
+
+  var CAP_SEND = "org.matrix.msc2762.send.event:m.room.message";
+  var CAP_RECV = "org.matrix.msc2762.receive.event:m.room.message";
+
+  var api = new mxwidgets.WidgetApi(widgetId || "spike-widget", "*");
+  api.requestCapabilities([CAP_SEND, CAP_RECV]);
+
+  var ready = false;
+  setTimeout(function () {
+    if (!ready) {
+      log("RESULT: no 'ready' after 10s — this client is NOT answering the " +
+          "widget API handshake. Widget approach fails here.", "bad");
+    }
+  }, 10000);
+
+  api.on("ready", function () {
+    ready = true;
+    log("Handshake OK — client speaks the widget API.", "ok");
+    var canSend = api.hasCapability(CAP_SEND);
+    var canRecv = api.hasCapability(CAP_RECV);
+    log("send m.room.message granted: " + canSend, canSend ? "ok" : "bad");
+    log("receive m.room.message granted: " + canRecv, canRecv ? "ok" : "bad");
+    log(canSend && canRecv
+        ? "RESULT: full pass — widget approach is viable on this client."
+        : "RESULT: handshake works but capabilities denied — check the " +
+          "permission prompt, or this client can't grant them.",
+        canSend && canRecv ? "ok" : "bad");
+    document.getElementById("send").disabled = false;
+    document.getElementById("read").disabled = false;
+  });
+
+  document.getElementById("send").onclick = function () {
+    api.sendRoomEvent("m.room.message", {
+      msgtype: "m.text",
+      body: "widget API spike test message"
+    }).then(function (r) {
+      log("Sent OK: " + JSON.stringify(r), "ok");
+    }).catch(function (e) {
+      log("Send FAILED: " + e, "bad");
+    });
+  };
+
+  document.getElementById("read").onclick = function () {
+    api.readRoomEvents("m.room.message", 5).then(function (events) {
+      log("Read OK — " + events.length + " event(s):", "ok");
+      events.forEach(function (ev) {
+        log("  " + ev.sender + ": " +
+            (ev.content && ev.content.body ? ev.content.body : "(no body)"));
+      });
+    }).catch(function (e) {
+      log("Read FAILED: " + e, "bad");
+    });
+  };
+
+  api.start();
+  log("Widget API started, waiting for handshake…");
+})();
+</script>
+</body>
+</html>
