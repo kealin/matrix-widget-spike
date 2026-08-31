@@ -1,0 +1,11 @@
+{
+  "name": "HS Probe",
+  "short_name": "HS Probe",
+  "start_url": "./mtls-probe.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
